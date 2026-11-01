@@ -1,0 +1,848 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPPT Rep Counter — Prototype</title>
+<style>
+  :root {
+    --bg: #14170F;
+    --panel: #1B2016;
+    --accent: #8CFF6B;
+    --accent-dim: #3E5F32;
+    --warn: #FFB238;
+    --text: #E9EDE2;
+    --text-dim: #93A088;
+    --line: #2A3122;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  header h1 {
+    font-size: 19px;
+    font-weight: 600;
+    margin: 0 0 3px;
+  }
+  header p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  .seg {
+    display: flex;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 3px;
+  }
+  .seg button {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .seg button.active {
+    background: var(--accent-dim);
+    color: var(--text);
+  }
+  .stage {
+    position: relative;
+    width: 100%;
+    background: #0B0D08;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    min-height: 240px;
+  }
+  .mirror {
+    position: relative;
+    transform: scaleX(-1);
+  }
+  video {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  .hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.5;
+    z-index: 2;
+  }
+  .readout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+  .count {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 52px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .count-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    letter-spacing: 0.3px;
+  }
+  .state-pill {
+    padding: 6px 14px;
+    border-radius: 100px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+  }
+  .state-pill[data-state="down"] { color: var(--warn); border-color: var(--warn); }
+  .state-pill[data-state="up"] { color: var(--accent); border-color: var(--accent); }
+  .angle-readout {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  .row { display: flex; gap: 10px; }
+  .btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn.primary {
+    background: var(--accent);
+    color: #0B0D08;
+    border-color: var(--accent);
+  }
+  .btn:disabled { opacity: 0.6; cursor: default; }
+  footer {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.55;
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>IPPT Rep Counter — Prototype</h1>
+    <p>Camera-based push-up / sit-up counting. No wearable, no sensor hardware — just a laptop or phone camera.</p>
+  </header>
+
+  <div class="seg">
+    <button id="modePushup" class="active">Push-up</button>
+    <button id="modeSitup">Sit-up</button>
+  </div>
+
+  <div class="seg" id="camSeg">
+    <button data-cam="user" class="active">Front camera</button>
+    <button data-cam="environment">Rear camera</button>
+  </div>
+
+  <div class="seg" id="viewSeg">
+    <button data-view="front" class="active">Camera in front</button>
+    <button data-view="side">Camera at side</button>
+  </div>
+
+  <div class="seg" id="delegateSeg">
+    <button data-d="CPU">CPU mode</button>
+    <button data-d="GPU">GPU mode</button>
+  </div>
+
+  <div class="stage" id="stage">
+    <div class="mirror">
+      <video id="video" playsinline autoplay muted></video>
+      <canvas id="overlay"></canvas>
+    </div>
+    <div class="hint" id="hint">Tap "Start Camera" to begin.<br>Push-ups, camera in front: face the camera with both shoulders in frame at the top and the bottom of a rep. Sit-ups: side-on, full body in frame.</div>
+  </div>
+
+  <div class="readout">
+    <div>
+      <div class="count" id="count">0</div>
+      <div class="count-label" id="modeLabel">PUSH-UPS</div>
+    </div>
+    <div class="state-pill" id="statePill" data-state="up">UP</div>
+  </div>
+  <div class="angle-readout" id="angleReadout">—</div>
+  <div class="angle-readout" id="diagnostics">—</div>
+
+  <div class="row">
+    <button class="btn primary" id="startBtn">Start Camera</button>
+    <button class="btn" id="resetBtn">Reset</button>
+    <button class="btn" id="recalBtn">Recalibrate</button>
+  </div>
+
+  <footer>
+    Runs fully in this browser tab — video never leaves the device. Needs a desktop browser (Chrome or Edge recommended), camera permission, and an internet connection on first load to fetch the pose model (cached after that). Push-ups are counted from how far your shoulder rises and drops (scaled to your own shoulder width when the camera is in front, or torso length from the side, so distance and height don't matter), and sit-ups from torso angle. Counting is based on detecting the actual top/bottom of each rep (not a single-frame threshold check), and it self-calibrates from your own first rep rather than relying on one fixed universal number. Start in the top position and stay in the same spot — watch the diagnostics line switch from "calibrating…" to "calibrated." If it still won't count after that and the diagnostics line shows "Delegate: CPU" or under ~8 fps, that's a hardware/browser bottleneck, not the counting logic — try Chrome specifically, close other tabs/apps, or use better lighting.
+  </footer>
+</div>
+
+<script type="module">
+import {
+  PoseLandmarker,
+  FilesetResolver
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+const countEl = document.getElementById('count');
+const modeLabelEl = document.getElementById('modeLabel');
+const statePill = document.getElementById('statePill');
+const angleReadout = document.getElementById('angleReadout');
+const diagnostics = document.getElementById('diagnostics');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+const modePushupBtn = document.getElementById('modePushup');
+const modeSitupBtn = document.getElementById('modeSitup');
+
+let mode = 'pushup';
+let repCount = 0;
+let repState = 'up';
+let poseLandmarker = null;
+let running = false;
+let lastVideoTime = -1;
+let activeDelegate = '—';
+let lastFps = null;
+let lockedSide = null; // 'L' or 'R' — which side of the body we're tracking
+let observedMin = null; // this session's own observed extremes — drives self-calibration
+let observedMax = null;
+let recentPeaks = [];   // last few top readings; observedMax is their median (robust to glitches)
+let recentValleys = []; // last few bottom readings; observedMin is their median
+let rejectedStreak = 0; // consecutive implausible frames dropped
+let outOfPositionStreak = 0; // consecutive frames not in push-up position
+let readyAt = 0; // counting starts once the get-ready countdown ends (0 = ready)
+let view = 'front'; // push-up camera placement: 'front' (facing you) or 'side' (profile)
+
+// Peak/valley detection state — replaces simple single-frame threshold crossing
+// so fast reps that skip past a fixed threshold between sampled frames still count.
+let rawHistory = [];       // last few raw angle readings, for light smoothing
+let prevSmoothed = null;
+let trend = null;          // 'rising' | 'falling'
+let extreme = null;        // running min/max angle since the last reversal
+let lastRepAt = 0;
+const MIN_REP_INTERVAL_MS = 250; // debounce — blocks noise-driven double counts, not fast real reps
+let frameTimestamps = [];
+
+// Fallback thresholds only — used until enough of YOUR own range has been observed (see
+// getEffectiveThresholds). A fixed universal number here would silently block every rep
+// for anyone whose camera angle/proportions don't happen to match it.
+// Push-ups now track shoulder height (as % of torso length), which has no universal
+// number, so the push-up fallback never triggers; it counts only once calibrated.
+const THRESH = {
+  pushup: { downBelow: -Infinity, upAbove: Infinity },
+  situp:  { downAbove: 65, upBelow: 35 }
+};
+const MIN_CALIBRATION_RANGE = { pushup: 18, situp: 15 }; // push-up: % of torso length (a full rep swings ~40-55, a nod only ~3-8); sit-up: degrees
+const MAX_PLANK_ANGLE = 60; // push-up counts only while shoulder-to-hip line is within this many degrees of horizontal
+const MIN_JOINT_VISIBILITY = 0.3;
+const CALIBRATION_MARGIN = 0.3; // fraction inward from each observed extreme (lenient, so shallower later reps still count)
+
+function isCalibrated() {
+  if (observedMin == null || observedMax == null) return false;
+  return (observedMax - observedMin) >= MIN_CALIBRATION_RANGE[mode];
+}
+
+function getEffectiveThresholds() {
+  if (!isCalibrated()) return THRESH[mode];
+  const range = observedMax - observedMin;
+  if (mode === 'pushup') {
+    return { downBelow: observedMin + CALIBRATION_MARGIN * range, upAbove: observedMax - CALIBRATION_MARGIN * range };
+  }
+  return { downAbove: observedMax - CALIBRATION_MARGIN * range, upBelow: observedMin + CALIBRATION_MARGIN * range };
+}
+
+function setMode(newMode) {
+  mode = newMode;
+  repCount = 0;
+  repState = mode === 'pushup' ? 'up' : 'down';
+  countEl.textContent = '0';
+  modeLabelEl.textContent = mode === 'pushup' ? 'PUSH-UPS' : 'SIT-UPS';
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+  modePushupBtn.classList.toggle('active', mode === 'pushup');
+  modeSitupBtn.classList.toggle('active', mode === 'situp');
+  rawHistory = [];
+  prevSmoothed = null;
+  trend = null;
+  extreme = null;
+  lastRepAt = 0;
+  lockedSide = null;
+  observedMin = null; // different exercise = different angle scale, calibration must restart
+  observedMax = null;
+  recentPeaks = [];
+  recentValleys = [];
+  rejectedStreak = 0;
+  outOfPositionStreak = 0;
+  readyAt = 0;
+  if (running && mode === 'pushup') beginCountdown(5);
+}
+
+function resetCounts() {
+  repCount = 0;
+  repState = mode === 'pushup' ? 'up' : 'down';
+  countEl.textContent = '0';
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+  rawHistory = [];
+  prevSmoothed = null;
+  trend = null;
+  extreme = null;
+  lastRepAt = 0;
+  // lockedSide and observedMin/observedMax (calibration) intentionally kept across a count reset
+}
+
+const viewSeg = document.getElementById('viewSeg');
+viewSeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  view = btn.dataset.view;
+  [...viewSeg.children].forEach(b => b.classList.toggle('active', b === btn));
+  setMode(mode); // different camera placement = different signal, so recalibrate
+});
+
+modePushupBtn.addEventListener('click', () => setMode('pushup'));
+modeSitupBtn.addEventListener('click', () => setMode('situp'));
+resetBtn.addEventListener('click', resetCounts);
+document.getElementById('recalBtn').addEventListener('click', () => setMode(mode)); // clears calibration and count, restarts the countdown
+
+function angleBetween(a, b, c) {
+  const ab = { x: a.x - b.x, y: a.y - b.y };
+  const cb = { x: c.x - b.x, y: c.y - b.y };
+  const dot = ab.x * cb.x + ab.y * cb.y;
+  const magAB = Math.hypot(ab.x, ab.y);
+  const magCB = Math.hypot(cb.x, cb.y);
+  const cos = Math.min(1, Math.max(-1, dot / (magAB * magCB)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+function angleFromVertical(hip, shoulder) {
+  // 0 = shoulder directly above hip (sitting upright), 90 = shoulder level with hip (lying flat)
+  const dx = shoulder.x - hip.x;
+  const dy = shoulder.y - hip.y;
+  return (Math.atan2(Math.abs(dx), Math.abs(dy)) * 180) / Math.PI;
+}
+
+let audioCtx = null;
+function unlockAudio() {
+  // Must run inside a tap: phones keep audio muted until a user gesture creates/resumes the context.
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!audioCtx) audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
+}
+
+function beep(freq = 880, dur = 0.15) {
+  try {
+    if (!audioCtx) return;
+    const actx = audioCtx;
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(actx.destination);
+    gain.gain.setValueAtTime(0.15, actx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+    osc.start();
+    osc.stop(actx.currentTime + dur);
+  } catch (e) { /* audio feedback is a nice-to-have, not critical */ }
+}
+
+function setRepState(newState) {
+  repState = newState;
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+}
+
+function countRep(now) {
+  if (now - lastRepAt < MIN_REP_INTERVAL_MS) return; // debounce noise, not fast genuine reps
+  lastRepAt = now;
+  setRepState('up');
+  repCount++;
+  countEl.textContent = String(repCount);
+  beep();
+}
+
+// Called on every detected direction reversal (kind: 'peak' or 'valley'), with the
+// extreme angle value reached during that swing — this is what actually gets
+// compared against the threshold, not a single live frame reading.
+function handleExtreme(kind, value) {
+  const now = performance.now();
+  const wasCalibrated = isCalibrated();
+  const eff = getEffectiveThresholds();
+  if (mode === 'pushup') {
+    if (kind === 'valley' && repState === 'up' && value < eff.downBelow) {
+      setRepState('down');
+    } else if (kind === 'peak' && repState === 'down' && value > eff.upAbove) {
+      countRep(now);
+    }
+  } else {
+    if (kind === 'peak' && repState === 'up' && value > eff.downAbove) {
+      setRepState('down');
+    } else if (kind === 'valley' && repState === 'down' && value < eff.upBelow) {
+      countRep(now);
+    }
+  }
+  // Before calibration: plain extremes, so the first real rep establishes the range. After:
+  // median of recent real swings (ignoring tiny jitter reversals near the opposite end), so one
+  // bad frame can't skew the thresholds.
+  if (kind === 'valley') {
+    if (!isCalibrated()) {
+      observedMin = observedMin == null ? value : Math.min(observedMin, value);
+      recentValleys = [observedMin];
+    } else if (value < (observedMin + observedMax) / 2) {
+      recentValleys.push(value);
+      if (recentValleys.length > 5) recentValleys.shift();
+      observedMin = median(recentValleys);
+    }
+  } else {
+    if (!isCalibrated()) {
+      observedMax = observedMax == null ? value : Math.max(observedMax, value);
+      recentPeaks = [observedMax];
+    } else if (value > (observedMin + observedMax) / 2) {
+      recentPeaks.push(value);
+      if (recentPeaks.length > 5) recentPeaks.shift();
+      observedMax = median(recentPeaks);
+    }
+  }
+  // First rep of a push-up set: the bottom has just given us a usable range, so treat this
+  // valley as "down" (the starting top position was seeded as observedMax) and the rep
+  // completes, and gets counted, on the next peak instead of being lost to calibration.
+  if (mode === 'pushup' && !wasCalibrated && isCalibrated() && kind === 'valley' && repState === 'up') {
+    setRepState('down');
+  }
+}
+
+function median(arr) {
+  const a = [...arr].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+function avgVis(...vals) {
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+function smooth(newVal) {
+  rawHistory.push(newVal);
+  if (rawHistory.length > 3) rawHistory.shift();
+  return rawHistory.reduce((a, b) => a + b, 0) / rawHistory.length;
+}
+
+// Locks onto whichever side of the body is more visible, and only switches if that
+// side clearly loses tracking — prevents flickering between left/right arm frame-to-frame,
+// which otherwise corrupts the angle signal with two different joints' readings.
+function pickLockedSide(visLAvg, visRAvg) {
+  if (lockedSide === null) {
+    lockedSide = visLAvg >= visRAvg ? 'L' : 'R';
+  } else {
+    const lockedAvg = lockedSide === 'L' ? visLAvg : visRAvg;
+    const otherAvg = lockedSide === 'L' ? visRAvg : visLAvg;
+    if (lockedAvg < 0.4 && otherAvg > lockedAvg + 0.15) {
+      lockedSide = lockedSide === 'L' ? 'R' : 'L';
+    }
+  }
+  return lockedSide;
+}
+
+function beginCountdown(seconds = 5) {
+  // Gives you time to get into the top position BEFORE the counter takes its reference reading.
+  readyAt = performance.now() + seconds * 1000;
+  rawHistory = []; prevSmoothed = null; trend = null; extreme = null;
+  outOfPositionStreak = 0; rejectedStreak = 0;
+}
+
+function notInPosition(message) {
+  outOfPositionStreak++;
+  if (outOfPositionStreak > 10) { // a brief tracking blip mid-set is tolerated; a real exit is not
+    rawHistory = []; prevSmoothed = null; trend = null; extreme = null; lockedSide = null;
+    if (repState !== 'up') setRepState('up');
+  }
+  angleReadout.textContent = message;
+}
+
+function processPose(lm) {
+  let angleValue = null;
+
+  if (mode === 'pushup' && readyAt) {
+    const msLeft = readyAt - performance.now();
+    if (msLeft > 0) {
+      angleReadout.textContent = `Get into the top of a push-up position and hold still… ${Math.ceil(msLeft / 1000)}`;
+      return;
+    }
+    readyAt = 0;
+    beep(520, 0.35); // "go"
+  }
+
+  if (mode === 'pushup' && view === 'front') {
+    // Camera in front: up/down movement of the shoulders is fully visible head-on (vertical
+    // stays vertical from any angle), so track the mid-shoulder height. Scale by shoulder WIDTH
+    // (not torso length, which is foreshortened from the front) so camera distance and body size
+    // drop out. A head nod barely moves the shoulders, so it can't swing this signal.
+    const a = lm[11], b = lm[12];
+    const width = Math.hypot(a.x - b.x, a.y - b.y);
+    const visible = (a.visibility ?? 1) >= MIN_JOINT_VISIBILITY && (b.visibility ?? 1) >= MIN_JOINT_VISIBILITY;
+    if (!visible || width < 0.05) {
+      notInPosition('Both shoulders need to be clearly in view, facing the camera. Move back a little or raise the camera.');
+      return;
+    }
+    outOfPositionStreak = 0;
+    angleValue = -(((a.y + b.y) / 2) / width) * 100; // image y grows downward, so negate: up = higher value
+  } else if (mode === 'pushup') {
+    // Camera at the side: shoulder height as % of torso length (shoulder-to-hip distance).
+    const shL = lm[11], hipL = lm[23];
+    const shR = lm[12], hipR = lm[24];
+    const visLAvg = avgVis(shL.visibility ?? 1, hipL.visibility ?? 1);
+    const visRAvg = avgVis(shR.visibility ?? 1, hipR.visibility ?? 1);
+    const side = pickLockedSide(visLAvg, visRAvg);
+    const [sh, hip] = side === 'L' ? [shL, hipL] : [shR, hipR];
+    // Position gate: only count while your body is roughly horizontal with shoulder and hip
+    // clearly visible, so seated/standing movement (e.g. a head nod) is ignored.
+    const dx = Math.abs(sh.x - hip.x), dy = Math.abs(sh.y - hip.y);
+    const torso = Math.hypot(dx, dy);
+    const tiltFromHorizontal = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const visible = (sh.visibility ?? 1) >= MIN_JOINT_VISIBILITY && (hip.visibility ?? 1) >= MIN_JOINT_VISIBILITY;
+    if (!visible || torso < 0.05 || tiltFromHorizontal > MAX_PLANK_ANGLE) {
+      notInPosition('Not in push-up position. Get to the top of a push-up, side-on, with shoulder and hip in view.');
+      return;
+    }
+    outOfPositionStreak = 0;
+    angleValue = -(sh.y / torso) * 100;
+  } else {
+    const hipL = lm[23], shL = lm[11];
+    const hipR = lm[24], shR = lm[12];
+    const visLAvg = avgVis(hipL.visibility ?? 1, shL.visibility ?? 1);
+    const visRAvg = avgVis(hipR.visibility ?? 1, shR.visibility ?? 1);
+    const side = pickLockedSide(visLAvg, visRAvg);
+    const [hip, sh] = side === 'L' ? [hipL, shL] : [hipR, shR];
+    angleValue = angleFromVertical(hip, sh);
+  }
+
+  // Drop physically impossible readings (a landmark glitch, or you standing up) instead of letting
+  // them wreck the calibration. Recalibration is manual (Recalibrate button), never automatic.
+  if (isCalibrated()) {
+    const range = observedMax - observedMin;
+    if (angleValue > observedMax + range || angleValue < observedMin - range) {
+      rejectedStreak++;
+      if (rejectedStreak > 20) {
+        angleReadout.textContent = 'Outside your calibrated range. Get back into push-up position, or tap Recalibrate if the camera moved.';
+      }
+      return;
+    }
+  }
+  rejectedStreak = 0;
+
+  const sm = smooth(angleValue);
+
+  if (prevSmoothed !== null && sm !== prevSmoothed) {
+    const rising = sm > prevSmoothed;
+    if (trend === null) {
+      trend = rising ? 'rising' : 'falling';
+      extreme = sm;
+      // Push-ups start at the top, so the first reading approximates the "up" extreme.
+      if (mode === 'pushup' && observedMax == null) { recentPeaks = [sm]; observedMax = sm; }
+    } else if (trend === 'rising' && !rising) {
+      handleExtreme('peak', extreme);
+      trend = 'falling';
+      extreme = sm;
+    } else if (trend === 'falling' && rising) {
+      handleExtreme('valley', extreme);
+      trend = 'rising';
+      extreme = sm;
+    } else {
+      extreme = trend === 'rising' ? Math.max(extreme, sm) : Math.min(extreme, sm);
+    }
+  }
+  prevSmoothed = sm;
+
+  // Count the moment you're back in the top zone instead of waiting for the next descent to
+  // reveal the peak (otherwise the last rep of a set is never counted), and mark "down" as soon
+  // as you cross into the bottom zone so fast reps with few frames can't skip past it.
+  if (isCalibrated()) {
+    const eff = getEffectiveThresholds();
+    const now = performance.now();
+    if (mode === 'pushup') {
+      if (repState === 'up' && sm < eff.downBelow) setRepState('down');
+      else if (repState === 'down' && sm > eff.upAbove) countRep(now);
+    } else {
+      if (repState === 'up' && sm > eff.downAbove) setRepState('down');
+      else if (repState === 'down' && sm < eff.upBelow) countRep(now);
+    }
+  }
+
+  angleReadout.textContent = mode === 'pushup'
+    ? `Shoulder height ${angleValue.toFixed(0)} (higher = up) · ${repState} · range ${observedMin == null ? '–' : observedMin.toFixed(0)} to ${observedMax == null ? '–' : observedMax.toFixed(0)}`
+    : `Tracking angle: ${angleValue.toFixed(0)}°`;
+}
+
+function updateFps(now) {
+  frameTimestamps.push(now);
+  if (frameTimestamps.length > 20) frameTimestamps.shift();
+  if (frameTimestamps.length >= 5) {
+    const elapsed = frameTimestamps[frameTimestamps.length - 1] - frameTimestamps[0];
+    lastFps = ((frameTimestamps.length - 1) / elapsed) * 1000;
+  }
+}
+
+function drawSkeleton(lm) {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  const connections = [
+    [11,13],[13,15],[12,14],[14,16],
+    [11,12],[11,23],[12,24],[23,24],
+    [23,25],[25,27],[24,26],[26,28]
+  ];
+  ctx.strokeStyle = 'rgba(140,255,107,0.85)';
+  ctx.lineWidth = 3;
+  connections.forEach(([i,j]) => {
+    const a = lm[i], b = lm[j];
+    if ((a.visibility ?? 1) < 0.3 || (b.visibility ?? 1) < 0.3) return;
+    ctx.beginPath();
+    ctx.moveTo(a.x * w, a.y * h);
+    ctx.lineTo(b.x * w, b.y * h);
+    ctx.stroke();
+  });
+  ctx.fillStyle = '#8CFF6B';
+  [11,12,13,14,15,16,23,24,25,26].forEach(i => {
+    const p = lm[i];
+    if ((p.visibility ?? 1) < 0.3) return;
+    ctx.beginPath();
+    ctx.arc(p.x * w, p.y * h, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+function resizeCanvas() {
+  canvas.width = video.videoWidth || canvas.clientWidth;
+  canvas.height = video.videoHeight || canvas.clientHeight;
+}
+
+let framesSeen = 0;
+let framesWithPerson = 0;
+let detectErrors = 0;
+let switchingDelegate = false;
+let lastTs = 0;
+
+function showDiagnostics() {
+  const fps = lastFps ? lastFps.toFixed(1) : '—';
+  const side = lockedSide ? ` · ${lockedSide === 'L' ? 'left' : 'right'} side` : '';
+  diagnostics.textContent = `${activeDelegate} · ~${fps} fps · person in ${framesWithPerson}/${framesSeen} frames${side} · ${isCalibrated() ? 'calibrated' : 'calibrating…'}`;
+}
+
+function scheduleNext() {
+  if (!running) return;
+  // Fire once per real camera frame where supported; otherwise fall back to every animation frame.
+  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(renderLoop);
+  else requestAnimationFrame(renderLoop);
+}
+
+function renderLoop() {
+  if (!running) return;
+  try {
+    if (video.readyState >= 2 && video.videoWidth) {
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) resizeCanvas();
+      let t = performance.now();
+      if (t <= lastTs) t = lastTs + 1; // the model needs strictly increasing timestamps
+      lastTs = t;
+      const result = poseLandmarker.detectForVideo(video, t);
+      updateFps(t);
+      framesSeen++;
+      detectErrors = 0;
+      if (result.landmarks && result.landmarks.length > 0) {
+        framesWithPerson++;
+        drawSkeleton(result.landmarks[0]);
+        processPose(result.landmarks[0]);
+      } else {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        angleReadout.textContent = 'No person detected. Move back until your shoulders and hips are in frame.';
+      }
+      showDiagnostics();
+    }
+  } catch (err) {
+    // Never let one bad frame kill the loop silently: show the error and keep going.
+    detectErrors++;
+    console.error(err);
+    angleReadout.textContent = 'Detection error: ' + (err && err.message ? err.message : err);
+    if (detectErrors >= 3 && activeDelegate === 'GPU' && !switchingDelegate) {
+      switchingDelegate = true;
+      setDelegate('CPU')
+        .then(() => { preferredDelegate = 'CPU'; markDelegateButtons(); detectErrors = 0; })
+        .catch(() => {})
+        .finally(() => { switchingDelegate = false; });
+    }
+  }
+  scheduleNext();
+}
+
+async function createLandmarker(vision, delegate) {
+  return PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+    // Lower than the 0.5 default: a body lying side-on is harder for the model to recognise.
+    minPoseDetectionConfidence: 0.3,
+    minPosePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3
+  });
+}
+
+let visionFileset = null;
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+// Phones default to CPU: GPU mode is the less reliable path in mobile browsers. Switch with the toggle.
+let preferredDelegate = isMobile ? 'CPU' : 'GPU';
+const delegateSeg = document.getElementById('delegateSeg');
+
+function markDelegateButtons() {
+  [...delegateSeg.children].forEach(b => b.classList.toggle('active', b.dataset.d === (running ? activeDelegate : preferredDelegate)));
+}
+
+async function setDelegate(delegate) {
+  const next = await createLandmarker(visionFileset, delegate);
+  const old = poseLandmarker;
+  poseLandmarker = next;
+  activeDelegate = delegate;
+  frameTimestamps = [];
+  if (old && old.close) { try { old.close(); } catch (e) {} }
+}
+
+delegateSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  preferredDelegate = btn.dataset.d;
+  markDelegateButtons();
+  if (running && !switchingDelegate) {
+    switchingDelegate = true;
+    try { await setDelegate(preferredDelegate); }
+    catch (err) { angleReadout.textContent = 'Could not switch to ' + preferredDelegate + ': ' + err.message; }
+    switchingDelegate = false;
+    markDelegateButtons();
+  }
+});
+markDelegateButtons();
+
+let facing = 'user'; // 'user' = front camera, 'environment' = rear camera
+let wakeLock = null;
+const mirrorEl = document.querySelector('.mirror');
+const camSeg = document.getElementById('camSeg');
+
+async function openCamera() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+    audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  resizeCanvas();
+  // Front camera is shown mirrored like a selfie; the rear camera must not be.
+  mirrorEl.style.transform = facing === 'user' ? 'scaleX(-1)' : 'none';
+}
+
+async function keepAwake() {
+  // Stops the phone screen sleeping mid-set, which would freeze the camera.
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) keepAwake();
+});
+
+camSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  facing = btn.dataset.cam;
+  [...camSeg.children].forEach(b => b.classList.toggle('active', b === btn));
+  if (running) {
+    try { await openCamera(); setMode(mode); } // new camera = new geometry, so recalibrate
+    catch (err) { angleReadout.textContent = 'Could not switch camera: ' + err.message; }
+  }
+});
+
+async function start() {
+  unlockAudio();
+  startBtn.disabled = true;
+  startBtn.textContent = 'Loading model…';
+  try {
+    visionFileset = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+    try {
+      await setDelegate(preferredDelegate);
+    } catch (firstErr) {
+      console.warn(preferredDelegate + ' delegate failed, trying the other one', firstErr);
+      await setDelegate(preferredDelegate === 'GPU' ? 'CPU' : 'GPU');
+    }
+
+    await openCamera();
+    keepAwake();
+    hint.style.display = 'none';
+    running = true;
+    if (mode === 'pushup') beginCountdown(5);
+    markDelegateButtons();
+    startBtn.textContent = 'Running';
+    renderLoop();
+  } catch (err) {
+    console.error(err);
+    hint.style.display = 'flex';
+    hint.textContent = 'Could not start: ' + err.message + (window.isSecureContext
+      ? '. Allow camera access for this page in your browser settings.'
+      : '. This page is not on HTTPS, so the browser blocks the camera. Open it from an https:// link.');
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Camera';
+  }
+}
+
+startBtn.addEventListener('click', start);
+video.addEventListener('loadedmetadata', resizeCanvas);
+video.addEventListener('resize', resizeCanvas);
+</script>
+</body>
+</html>
