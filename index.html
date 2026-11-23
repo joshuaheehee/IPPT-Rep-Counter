@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<!-- index.html: one self-contained page (HTML + CSS + JavaScript, no build step, no server, nothing saved). -->
+<!-- It counts push-ups and sit-ups from the camera using an AI pose model that runs inside the browser. -->
+<!-- Video never leaves the device. Needs HTTPS (e.g. GitHub Pages) so the browser allows camera access. -->
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IPPT Rep Counter — Prototype</title>
+<!-- CSS: appearance only. No logic lives in this block. -->
+<style>
+  /* Colour theme: every colour is defined once here as a variable and reused below. */
+  :root {
+    --bg: #14170F;
+    --panel: #1B2016;
+    --accent: #8CFF6B;
+    --accent-dim: #3E5F32;
+    --warn: #FFB238;
+    --text: #E9EDE2;
+    --text-dim: #93A088;
+    --line: #2A3122;
+  }
+  /* Make padding and borders count inside element widths, which keeps the layout maths simple. */
+  * { box-sizing: border-box; }
+  /* Page background, text colour and font. min-height keeps the dark background full-screen. */
+  html, body {
+    margin: 0; padding: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    min-height: 100vh;
+  }
+  /* Main column: centred, at most 480px wide (phone friendly), with a gap between each section. */
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    padding: 20px 16px 40px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  /* Title and subtitle text styles. */
+  header h1 {
+    font-size: 19px;
+    font-weight: 600;
+    margin: 0 0 3px;
+  }
+  header p {
+    margin: 0;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+  /* '.seg' is a segmented control: a row of toggle buttons. Used for the four selectors (exercise, camera, view, processor). */
+  .seg {
+    display: flex;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 3px;
+  }
+  .seg button {
+    flex: 1;
+    padding: 10px;
+    border: none;
+    background: transparent;
+    color: var(--text-dim);
+    font-size: 14px;
+    font-weight: 600;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  /* The currently selected option is highlighted. */
+  .seg button.active {
+    background: var(--accent-dim);
+    color: var(--text);
+  }
+  /* The video box. It holds the camera video with the skeleton canvas drawn on top. */
+  .stage {
+    position: relative;
+    width: 100%;
+    background: #0B0D08;
+    border-radius: 10px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    min-height: 240px;
+  }
+  /* Flips video AND overlay together left-to-right (selfie view). JavaScript removes the flip for the rear camera. */
+  .mirror {
+    position: relative;
+    transform: scaleX(-1);
+  }
+  /* The video fills the box width; its height follows the camera aspect ratio. */
+  video {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  /* The overlay canvas sits exactly on top of the video at the same size, so drawn dots line up with the body. */
+  canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%;
+    height: 100%;
+  }
+  /* Instruction or error text shown over the video before the camera starts. JavaScript hides it once running. */
+  .hint {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+    color: var(--text-dim);
+    font-size: 13px;
+    line-height: 1.5;
+    z-index: 2;
+  }
+  /* Panel holding the big rep count and the UP/DOWN pill. */
+  .readout {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 16px 20px;
+  }
+  /* The big rep number. Monospace with tabular digits so the number doesn't jitter in width as it changes. */
+  .count {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 52px;
+    font-weight: 600;
+    line-height: 1;
+    color: var(--accent);
+    font-variant-numeric: tabular-nums;
+  }
+  .count-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    margin-top: 4px;
+    letter-spacing: 0.3px;
+  }
+  /* UP/DOWN indicator: green for up, amber for down. JavaScript sets the data-state attribute that these rules read. */
+  .state-pill {
+    padding: 6px 14px;
+    border-radius: 100px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--line);
+    color: var(--text-dim);
+  }
+  .state-pill[data-state="down"] { color: var(--warn); border-color: var(--warn); }
+  .state-pill[data-state="up"] { color: var(--accent); border-color: var(--accent); }
+  /* Small grey status lines under the count (live signal and diagnostics). */
+  .angle-readout {
+    font-size: 12px;
+    color: var(--text-dim);
+    text-align: center;
+  }
+  /* Row of action buttons (Start Camera, Reset, Recalibrate). */
+  .row { display: flex; gap: 10px; }
+  /* Button styles. .primary is the green Start button; :disabled dims a button while it is busy. */
+  .btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--line);
+    background: var(--panel);
+    color: var(--text);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .btn.primary {
+    background: var(--accent);
+    color: #0B0D08;
+    border-color: var(--accent);
+  }
+  .btn:disabled { opacity: 0.6; cursor: default; }
+  /* Help text at the bottom of the page. */
+  footer {
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.55;
+  }
+</style>
+</head>
+<body>
+<!-- Page layout: one centred column holding the selectors, camera view, counter and buttons. -->
+<div class="app">
+  <!-- Title and one-line description. -->
+  <header>
+    <h1>IPPT Rep Counter — Prototype</h1>
+    <p>Camera-based push-up / sit-up counting. No wearable, no sensor hardware — just a laptop or phone camera.</p>
+  </header>
+
+  <!-- Selector 1: which exercise to count. JavaScript: modePushupBtn / modeSitupBtn -> setMode(). -->
+  <div class="seg">
+    <button id="modePushup" class="active">Push-up</button>
+    <button id="modeSitup">Sit-up</button>
+  </div>
+
+  <!-- Selector 2: which phone camera to use. data-cam is passed to the browser as facingMode (user = front/selfie, environment = rear). -->
+  <div class="seg" id="camSeg">
+    <button data-cam="user" class="active">Front camera</button>
+    <button data-cam="environment">Rear camera</button>
+  </div>
+
+  <!-- Selector 3: where the camera is relative to you for push-ups. Sit-ups ignore this and are always side-on. -->
+  <div class="seg" id="viewSeg">
+    <button data-view="front" class="active">Camera in front</button>
+    <button data-view="side">Camera at side</button>
+  </div>
+
+  <!-- Selector 4: run the AI model on the CPU or the GPU. Phones start on CPU because GPU mode is less reliable in phone browsers. -->
+  <div class="seg" id="delegateSeg">
+    <button data-d="CPU">CPU mode</button>
+    <button data-d="GPU">GPU mode</button>
+  </div>
+
+  <!-- Camera view. <video> shows the live camera; <canvas> is where the skeleton is drawn. Both are inside .mirror so they flip together. -->
+  <div class="stage" id="stage">
+    <div class="mirror">
+      <!-- playsinline keeps video inside the page on iPhones; muted + autoplay let playback start without extra taps. -->
+      <video id="video" playsinline autoplay muted></video>
+      <!-- Drawn on by drawSkeleton() in the script. -->
+      <canvas id="overlay"></canvas>
+    </div>
+    <!-- Starting instructions; replaced by an error message if the camera or model cannot start. -->
+    <div class="hint" id="hint">Tap "Start Camera" to begin.<br>Push-ups, camera in front: face the camera with both shoulders in frame at the top and the bottom of a rep. Sit-ups: side-on, full body in frame, hands cupped at your ears, lie fully flat between reps.</div>
+  </div>
+
+  <!-- Rep counter and current state. -->
+  <div class="readout">
+    <div>
+      <div class="count" id="count">0</div>
+      <div class="count-label" id="modeLabel">PUSH-UPS</div>
+    </div>
+    <!-- Shows UP or DOWN. Updated by setRepState(). -->
+    <div class="state-pill" id="statePill" data-state="up">UP</div>
+  </div>
+  <!-- Status line 1: what the counter is seeing right now (live signal, countdown, or a warning such as "No person detected"). -->
+  <div class="angle-readout" id="angleReadout">—</div>
+  <!-- Status line 2: processor in use, frames per second, how often a person was found, tracked side, and calibrated/calibrating. -->
+  <div class="angle-readout" id="diagnostics">—</div>
+
+  <!-- Buttons. Start loads the model and camera. Reset zeroes the count but keeps calibration. Recalibrate clears both and restarts the countdown. -->
+  <div class="row">
+    <button class="btn primary" id="startBtn">Start Camera</button>
+    <button class="btn" id="resetBtn">Reset</button>
+    <button class="btn" id="recalBtn">Recalibrate</button>
+  </div>
+
+  <!-- User-facing help text. -->
+  <footer>
+    Runs fully in this browser tab — video never leaves the device. Needs a desktop browser (Chrome or Edge recommended), camera permission, and an internet connection on first load to fetch the pose model (cached after that). Push-ups are counted from how far your shoulder rises and drops (scaled to your own shoulder width when the camera is in front, or torso length from the side, so distance and height don't matter), and sit-ups from torso angle. Counting is based on detecting the actual top/bottom of each rep (not a single-frame threshold check), and it self-calibrates from your own first rep rather than relying on one fixed universal number. Start in the top position and stay in the same spot — watch the diagnostics line switch from "calibrating…" to "calibrated." If it still won't count after that and the diagnostics line shows "Delegate: CPU" or under ~8 fps, that's a hardware/browser bottleneck, not the counting logic — try Chrome specifically, close other tabs/apps, or use better lighting.
+  </footer>
+</div>
+
+<!-- All logic: pose detection, rep counting and camera handling. type=module is required for the import below. -->
+<script type="module">
+// =====================================================================================
+// IPPT REP COUNTER: how this script works (read this first)
+// =====================================================================================
+// WHAT IT DOES
+//   Uses the camera plus Google MediaPipe pose detection to count push-ups (camera in front of you
+//   or at your side) and sit-ups (camera at your side). Everything runs in the browser.
+//
+// WHAT HAPPENS ON EVERY CAMERA FRAME (see renderLoop and processPose)
+//   1. The pose model finds body landmarks (shoulders, hips and so on) as x/y values from 0 to 1.
+//   2. The script turns them into ONE number, the "signal", that rises and falls as you do a rep.
+//      Push-ups: shoulder height scaled by body size. Sit-ups: torso angle from vertical.
+//   3. The signal is smoothed, then the script watches for it turning around: a turn at the bottom
+//      is a "valley", a turn at the top is a "peak".
+//   4. Your own first reps set your personal top and bottom ("calibration"); the thresholds sit a
+//      little inside that range, so no single fixed number is assumed to suit everyone.
+//   5. A small UP/DOWN state machine counts a rep when you go down past the bottom threshold and
+//      come back up past the top threshold, then it beeps and updates the screen.
+//      Sit-ups add quality rules on top: the back must return flat after every rep, half-reps are not counted,
+//      and a rep only counts if your hands are confirmed at your ears during the climb (hands anywhere else, or hands the
+//      camera cannot confirm, means no rep).
+//
+// SECTIONS, IN ORDER
+//   1. Page element references          5. Counting logic
+//   2. State variables                  6. Turning landmarks into a signal, detecting reps
+//   3. Tuning constants, calibration    7. Frame rate, drawing, camera loop, CPU/GPU, camera
+//   4. Mode, reset, small helpers       8. Startup (start) and event wiring
+// =====================================================================================
+//
+// Loads the MediaPipe vision library (pinned version) from a CDN. This is an ES module import.
+import {
+  PoseLandmarker,
+  FilesetResolver
+} from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs";
+
+// ----- 1. Page element references -----
+// Look up the HTML elements the script reads or updates, once, so they can be reused below.
+const video = document.getElementById('video');
+const canvas = document.getElementById('overlay');
+const ctx = canvas.getContext('2d');
+const hint = document.getElementById('hint');
+const countEl = document.getElementById('count');
+const modeLabelEl = document.getElementById('modeLabel');
+const statePill = document.getElementById('statePill');
+const angleReadout = document.getElementById('angleReadout');
+const diagnostics = document.getElementById('diagnostics');
+const startBtn = document.getElementById('startBtn');
+const resetBtn = document.getElementById('resetBtn');
+const modePushupBtn = document.getElementById('modePushup');
+const modeSitupBtn = document.getElementById('modeSitup');
+
+// ----- 2. State variables (the app's memory) -----
+// Active exercise, reps counted so far, and the counter's position: 'up' = top of the movement,
+// 'down' = bottom. BOTH exercises start 'up', which really means "not yet seen at the bottom": a rep only counts
+// after you have actually gone down and come back up. So choosing an exercise while sitting or standing can never
+// count a rep by itself.
+let mode = 'pushup';
+let repCount = 0;
+let repState = 'up';
+// The pose-model object, whether the camera loop is running, and which processor is in use.
+// lastVideoTime is an unused leftover from an earlier version of the loop.
+let poseLandmarker = null;
+let running = false;
+let lastVideoTime = -1;
+let activeDelegate = '—';
+let lastFps = null;
+// Tracking quality and calibration: which body side is followed (L or R), your learned top and bottom
+// (observedMax / observedMin), the 5 most recent genuine peaks/valleys behind them, and counters of
+// consecutive bad frames. The trailing comments explain each one.
+let lockedSide = null; // 'L' or 'R' — which side of the body we're tracking
+let observedMin = null; // this session's own observed extremes — drives self-calibration
+let observedMax = null;
+let recentPeaks = [];   // last few top readings; observedMax is their median (robust to glitches)
+let recentValleys = []; // last few bottom readings; observedMin is their median
+let rejectedStreak = 0; // consecutive implausible frames dropped
+let outOfPositionStreak = 0; // consecutive frames not in push-up position
+let readyAt = 0; // counting starts once the get-ready countdown ends (0 = ready)
+let view = 'front'; // push-up camera placement: 'front' (facing you) or 'side' (profile)
+
+// Peak/valley detection state — replaces simple single-frame threshold crossing
+// so fast reps that skip past a fixed threshold between sampled frames still count.
+let rawHistory = [];       // last few raw angle readings, for light smoothing
+let prevSmoothed = null;
+let trend = null;          // 'rising' | 'falling'
+let extreme = null;        // running min/max angle since the last reversal
+// lastRepAt: time (ms) the last rep was counted, used by the debounce in countRep().
+let lastRepAt = 0;
+const MIN_REP_INTERVAL_MS = 250; // debounce — blocks noise-driven double counts, not fast real reps
+// Times of recent frames, used to estimate frames per second.
+let frameTimestamps = [];
+// Sit-up hand checking. During the climb (from leaving the flat position to reaching the top) every frame is classed as
+// hands AT the ears, NOT at the ears, or unverifiable, and tallied in handsOkFrames / handsOffFrames / handsUnknownFrames.
+// The tallies restart each time you arrive flat and after every counted or rejected rep. handsStatus ('ok' / 'off' /
+// 'unknown') is the latest frame's class and feeds the status line; repNote is a short message about a rejected rep that
+// stays on screen until repNoteUntil (ms).
+let handsOkFrames = 0;
+let handsOffFrames = 0;
+let handsUnknownFrames = 0;
+let handsStatus = 'unknown';
+let repNote = '';
+let repNoteUntil = 0;
+
+// ----- 3. Tuning constants and calibration -----
+// Fallback thresholds only — used until enough of YOUR own range has been observed (see
+// getEffectiveThresholds). A fixed universal number here would silently block every rep
+// for anyone whose camera angle/proportions don't happen to match it.
+// Push-ups now track shoulder height (as % of torso length), which has no universal
+// number, so the push-up fallback never triggers; it counts only once calibrated.
+const THRESH = {
+  pushup: { downBelow: -Infinity, upAbove: Infinity },
+  situp:  { downAbove: 70, upBelow: 40 } // fallback until calibrated; already as strict as the quality rules below
+};
+// How big a top-to-bottom swing must be before it counts as a real rep and is used for calibration.
+// Push-ups: in signal units (percent of body scale); a full rep is roughly 40-55, a head nod only 3-8.
+// Sit-ups: in degrees. Raise these if small movements miscount; lower them if shallow reps are ignored.
+const MIN_CALIBRATION_RANGE = { pushup: 18, situp: 15 }; // push-up: % of torso length (a full rep swings ~40-55, a nod only ~3-8); sit-up: degrees
+const MAX_PLANK_ANGLE = 60; // push-up counts only while shoulder-to-hip line is within this many degrees of horizontal
+// Minimum model confidence (0 to 1) that a body point is really visible before the push-up logic uses it.
+const MIN_JOINT_VISIBILITY = 0.3;
+// Sit-ups only: the angle (degrees from vertical) that separates "lying back" from "sitting up". While still calibrating,
+// a lying-back peak must be above it and a sitting-up valley below it to be recorded, so leaning or fidgeting while
+// seated can never be learned as your sit-up range.
+const SITUP_SPLIT_ANGLE = 50;
+// ----- Sit-up quality rules -----
+// The standards: lower back flat on the ground after every rep, no half-reps, hands cupped at the ears.
+// Angles are the torso angle from vertical: 90 = lying flat, 0 = sitting upright. The two ANGLE limits are absolute:
+// they apply on top of your personal range and never loosen, even as you tire.
+const SITUP_MIN_FLAT_ANGLE = 70; // every rep must return to at least this flat (lower back on the ground) ...
+const SITUP_MAX_TOP_ANGLE = 45;  // ... and come up at least this far, otherwise it is a half-rep and does not count
+// Personal margins (how far inside your own range the thresholds sit). Kept as lenient as push-ups on purpose: the strictness
+// comes from the two absolute limits above, and tighter personal margins caused missed reps at low frame rates (smoothing
+// flattens the bottom of a fast rep, and your resting reading can sit higher than any moving reading).
+const SITUP_DOWN_MARGIN = 0.3;
+const SITUP_UP_MARGIN = 0.3;
+// Hands must be at the ears: during the climb, the near-side wrist has to be within this distance of the near-side ear,
+// measured as a fraction of your shoulder-to-hip length. Hands cupped at the ears is roughly 0.1-0.2, hands on the chest
+// about 0.5-0.6, and arms swung or reaching for the knees above 1. Anything beyond this limit counts as "not at the ears".
+const HANDS_AT_EAR_LIMIT = 0.35;
+// Wrist and ear must both be seen at least this clearly to judge a frame; otherwise that frame is "unverified".
+const MIN_HAND_VISIBILITY = 0.5;
+// A rep needs its climb confirmed: no frame may show the hands elsewhere, at least one frame must show them at the ears,
+// and at least this share of the climb's frames must show them at the ears.
+const MIN_HANDS_OK_SHARE = 0.5;
+// What to do when the hands cannot be confirmed (wrist or ear not visible enough). false = strict: no confirmation, no rep.
+// true = count the rep anyway (only a clear sighting of the hands elsewhere rejects it). Switch to true if good reps keep
+// being refused with "could not confirm your hands" because the pose model struggles to see the wrist beside your head.
+const COUNT_WHEN_HANDS_UNVERIFIED = false;
+const CALIBRATION_MARGIN = 0.3; // fraction inward from each observed extreme (lenient, so shallower later reps still count)
+
+// isCalibrated(): true once a top and a bottom have been seen that are far enough apart to be a genuine rep.
+function isCalibrated() {
+  if (observedMin == null || observedMax == null) return false;
+  return (observedMax - observedMin) >= MIN_CALIBRATION_RANGE[mode];
+}
+
+// getEffectiveThresholds(): the up/down thresholds to use right now.
+//   Not calibrated yet: the fixed fallbacks in THRESH (for push-ups these never trigger).
+//   Calibrated: thresholds placed CALIBRATION_MARGIN (30%) of the range inside your own top and bottom.
+//   Push-ups: DOWN when the signal drops below the bottom threshold; counted when it rises above the top one.
+//   Sit-ups are mirrored, because their signal is an angle: large when lying down, small when sitting up. They are also
+//   stricter: the personal thresholds (SITUP_DOWN_MARGIN / SITUP_UP_MARGIN inside your range) are clamped so that the
+//   bottom threshold is never below SITUP_MIN_FLAT_ANGLE and the top threshold never above SITUP_MAX_TOP_ANGLE.
+function getEffectiveThresholds() {
+  if (!isCalibrated()) return THRESH[mode];
+  const range = observedMax - observedMin;
+  if (mode === 'pushup') {
+    return { downBelow: observedMin + CALIBRATION_MARGIN * range, upAbove: observedMax - CALIBRATION_MARGIN * range };
+  }
+  return {
+    downAbove: Math.max(observedMax - SITUP_DOWN_MARGIN * range, SITUP_MIN_FLAT_ANGLE),
+    upBelow: Math.min(observedMin + SITUP_UP_MARGIN * range, SITUP_MAX_TOP_ANGLE)
+  };
+}
+
+// ----- 4. Mode, reset and small helpers -----
+// setMode(): switch exercise, or fully reset (count, calibration, tracking history). Also used by Recalibrate
+// and whenever the camera or view changes. If the camera is already running in push-up mode, it starts the
+// 5-second get-ready countdown.
+function setMode(newMode) {
+  mode = newMode;
+  repCount = 0;
+  repState = 'up'; // both exercises start at 'up' (not yet seen at the bottom), see section 2
+  countEl.textContent = '0';
+  modeLabelEl.textContent = mode === 'pushup' ? 'PUSH-UPS' : 'SIT-UPS';
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+  modePushupBtn.classList.toggle('active', mode === 'pushup');
+  modeSitupBtn.classList.toggle('active', mode === 'situp');
+  rawHistory = [];
+  prevSmoothed = null;
+  trend = null;
+  extreme = null;
+  lastRepAt = 0;
+  resetHandTally(); handsStatus = 'unknown'; repNote = ''; repNoteUntil = 0;
+  lockedSide = null;
+  observedMin = null; // different exercise = different angle scale, calibration must restart
+  observedMax = null;
+  recentPeaks = [];
+  recentValleys = [];
+  rejectedStreak = 0;
+  outOfPositionStreak = 0;
+  readyAt = 0;
+  if (running && mode === 'pushup') beginCountdown(5);
+}
+
+// resetCounts(): zero the count and tracking history only. Calibration is kept, so a second set needs no recalibration.
+function resetCounts() {
+  repCount = 0;
+  repState = 'up'; // both exercises start at 'up' (not yet seen at the bottom), see section 2
+  countEl.textContent = '0';
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+  rawHistory = [];
+  prevSmoothed = null;
+  trend = null;
+  extreme = null;
+  lastRepAt = 0;
+  resetHandTally(); handsStatus = 'unknown'; repNote = ''; repNoteUntil = 0;
+  // lockedSide and observedMin/observedMax (calibration) intentionally kept across a count reset
+}
+
+// Camera-placement toggle (front / side). It changes which signal is used, so calibration restarts through setMode().
+const viewSeg = document.getElementById('viewSeg');
+viewSeg.addEventListener('click', (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  view = btn.dataset.view;
+  [...viewSeg.children].forEach(b => b.classList.toggle('active', b === btn));
+  setMode(mode); // different camera placement = different signal, so recalibrate
+});
+
+// Button wiring. Reset keeps calibration; Recalibrate clears it and the count, and restarts the countdown.
+modePushupBtn.addEventListener('click', () => setMode('pushup'));
+modeSitupBtn.addEventListener('click', () => setMode('situp'));
+resetBtn.addEventListener('click', resetCounts);
+document.getElementById('recalBtn').addEventListener('click', () => setMode(mode)); // clears calibration and count, restarts the countdown
+
+// angleBetween(a, b, c): the angle at point b between points a and c (for example an elbow angle).
+// NOT USED any more. It belonged to the earlier elbow-angle method and can be deleted.
+function angleBetween(a, b, c) {
+  const ab = { x: a.x - b.x, y: a.y - b.y };
+  const cb = { x: c.x - b.x, y: c.y - b.y };
+  const dot = ab.x * cb.x + ab.y * cb.y;
+  const magAB = Math.hypot(ab.x, ab.y);
+  const magCB = Math.hypot(cb.x, cb.y);
+  const cos = Math.min(1, Math.max(-1, dot / (magAB * magCB)));
+  return (Math.acos(cos) * 180) / Math.PI;
+}
+
+// angleFromVertical(): the sit-up signal. Angle of the hip-to-shoulder line from vertical, 0 to 90 degrees.
+function angleFromVertical(hip, shoulder) {
+  // 0 = shoulder directly above hip (sitting upright), 90 = shoulder level with hip (lying flat)
+  const dx = shoulder.x - hip.x;
+  const dy = shoulder.y - hip.y;
+  return (Math.atan2(Math.abs(dx), Math.abs(dy)) * 180) / Math.PI;
+}
+
+// Audio: browsers (especially on phones) keep sound muted until a tap, so one shared AudioContext is created or
+// resumed inside the Start tap (unlockAudio) and reused by every beep.
+let audioCtx = null;
+function unlockAudio() {
+  // Must run inside a tap: phones keep audio muted until a user gesture creates/resumes the context.
+  try {
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!audioCtx) audioCtx = new AudioCtx();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) {}
+}
+
+// beep(): a short tone. 880 Hz by default for a counted rep; the countdown "go" uses a lower 520 Hz.
+// Silently does nothing if audio is unavailable.
+function beep(freq = 880, dur = 0.15) {
+  try {
+    if (!audioCtx) return;
+    const actx = audioCtx;
+    const osc = actx.createOscillator();
+    const gain = actx.createGain();
+    osc.frequency.value = freq;
+    osc.connect(gain);
+    gain.connect(actx.destination);
+    gain.gain.setValueAtTime(0.15, actx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, actx.currentTime + dur);
+    osc.start();
+    osc.stop(actx.currentTime + dur);
+  } catch (e) { /* audio feedback is a nice-to-have, not critical */ }
+}
+
+// ----- 5. Counting logic -----
+// setRepState(): update the UP/DOWN state and the pill on screen.
+function setRepState(newState) {
+  repState = newState;
+  if (newState === 'down') resetHandTally(); // each rep's hand check starts fresh when you arrive flat
+  statePill.textContent = repState.toUpperCase();
+  statePill.dataset.state = repState;
+}
+
+// resetHandTally(): forget the hand sightings of the current climb.
+function resetHandTally() {
+  handsOkFrames = 0; handsOffFrames = 0; handsUnknownFrames = 0;
+}
+
+// handsProblem(): sit-ups only. Returns a message if this climb must NOT count because of the hands, or '' if it is fine.
+//   Any frame with the hands elsewhere rejects it. Otherwise the hands must be confirmed at the ears (at least one frame, and
+//   at least MIN_HANDS_OK_SHARE of the climb), unless COUNT_WHEN_HANDS_UNVERIFIED is true.
+function handsProblem() {
+  if (handsOffFrames > 0) return 'Rep not counted: your hands left your ears. Keep them cupped at your ears.';
+  const climbFrames = handsOkFrames + handsUnknownFrames; // no "off" frames at this point
+  const confirmed = handsOkFrames >= 1 && handsOkFrames >= MIN_HANDS_OK_SHARE * climbFrames;
+  if (!confirmed && !COUNT_WHEN_HANDS_UNVERIFIED) return 'Rep not counted: could not confirm your hands are at your ears.';
+  return '';
+}
+
+// countRep(): add one rep. Ignored if the previous rep was under 250 ms ago, so noise cannot count one rep twice.
+// For sit-ups it first checks the hands (handsProblem): a climb without the hands confirmed at the ears is rejected.
+function countRep(now) {
+  if (now - lastRepAt < MIN_REP_INTERVAL_MS) return; // debounce noise, not fast genuine reps
+  // Sit-ups: a rejected rep does not count and the state goes back to 'up', so you must lie flat again before the next try.
+  if (mode === 'situp') {
+    const problem = handsProblem();
+    if (problem) {
+      resetHandTally();
+      setRepState('up');
+      repNote = problem;
+      repNoteUntil = now + 2500;
+      beep(300, 0.25); // low tone = rejected
+      return;
+    }
+  }
+  lastRepAt = now;
+  resetHandTally();
+  setRepState('up');
+  repCount++;
+  countEl.textContent = String(repCount);
+  beep();
+}
+
+// Called on every detected direction reversal (kind: 'peak' or 'valley'), with the
+// extreme angle value reached during that swing — this is what actually gets
+// compared against the threshold, not a single live frame reading.
+function handleExtreme(kind, value) {
+  const now = performance.now();
+  // Remember whether we were calibrated BEFORE this swing (used by the first-rep rule at the end).
+  const wasCalibrated = isCalibrated();
+  // The thresholds in force right now (personal ones once calibrated).
+  const eff = getEffectiveThresholds();
+  // Step 1: use this swing to move the UP/DOWN state machine.
+  if (mode === 'pushup') {
+    // Push-ups: a valley below the bottom threshold means DOWN; a peak above the top threshold while DOWN completes a rep.
+    if (kind === 'valley' && repState === 'up' && value < eff.downBelow) {
+      setRepState('down');
+    } else if (kind === 'peak' && repState === 'down' && value > eff.upAbove) {
+      countRep(now);
+    }
+  } else {
+    // Sit-ups, mirrored: a peak (lying flat) means DOWN; a valley (sitting up) while DOWN completes a rep.
+    // Because the state starts at 'up', you must lie back past the bottom threshold before any sit-up can count.
+    if (kind === 'peak' && repState === 'up' && value > eff.downAbove) {
+      setRepState('down');
+    } else if (kind === 'valley' && repState === 'down' && value < eff.upBelow) {
+      countRep(now);
+    }
+  }
+  // Step 2: use this swing to update your calibrated range.
+  // Before calibration: plain extremes, so the first real rep establishes the range. After:
+  // median of recent real swings (ignoring tiny jitter reversals near the opposite end), so one
+  // bad frame can't skew the thresholds.
+  if (kind === 'valley') {
+    if (!isCalibrated()) {
+      // Sit-ups: only a genuine "sat up" position (below SITUP_SPLIT_ANGLE) may define the bottom of the range.
+      if (!(mode === 'situp' && value > SITUP_SPLIT_ANGLE)) {
+        observedMin = observedMin == null ? value : Math.min(observedMin, value);
+        recentValleys = [observedMin];
+      }
+    } else if (value < (observedMin + observedMax) / 2) {
+      recentValleys.push(value);
+      if (recentValleys.length > 5) recentValleys.shift();
+      observedMin = median(recentValleys);
+    }
+  } else {
+    if (!isCalibrated()) {
+      // Sit-ups: only a genuine "lying back" position (above SITUP_SPLIT_ANGLE) may define the top of the range.
+      if (!(mode === 'situp' && value < SITUP_SPLIT_ANGLE)) {
+        observedMax = observedMax == null ? value : Math.max(observedMax, value);
+        recentPeaks = [observedMax];
+      }
+    } else if (value > (observedMin + observedMax) / 2) {
+      recentPeaks.push(value);
+      if (recentPeaks.length > 5) recentPeaks.shift();
+      observedMax = median(recentPeaks);
+    }
+  }
+  // First rep of a push-up set: the bottom has just given us a usable range, so treat this
+  // valley as "down" (the starting top position was seeded as observedMax) and the rep
+  // completes, and gets counted, on the next peak instead of being lost to calibration.
+  if (mode === 'pushup' && !wasCalibrated && isCalibrated() && kind === 'valley' && repState === 'up') {
+    setRepState('down');
+  }
+}
+
+// median(): the middle value of a list (average of the two middle values if the count is even). Ignores one-off outliers.
+function median(arr) {
+  const a = [...arr].sort((x, y) => x - y);
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : (a[m - 1] + a[m]) / 2;
+}
+
+// avgVis(): average of several visibility scores.
+function avgVis(...vals) {
+  return vals.reduce((a, b) => a + b, 0) / vals.length;
+}
+
+// ----- 6. Turning landmarks into a signal, and detecting reps -----
+// smooth(): average of the last 3 signal values, which steadies jitter in the pose model output.
+function smooth(newVal) {
+  rawHistory.push(newVal);
+  if (rawHistory.length > 3) rawHistory.shift();
+  return rawHistory.reduce((a, b) => a + b, 0) / rawHistory.length;
+}
+
+// Locks onto whichever side of the body is more visible, and only switches if that
+// side clearly loses tracking — prevents flickering between left/right arm frame-to-frame,
+// which otherwise corrupts the angle signal with two different joints' readings.
+function pickLockedSide(visLAvg, visRAvg) {
+  if (lockedSide === null) {
+    lockedSide = visLAvg >= visRAvg ? 'L' : 'R';
+  } else {
+    const lockedAvg = lockedSide === 'L' ? visLAvg : visRAvg;
+    const otherAvg = lockedSide === 'L' ? visRAvg : visLAvg;
+    if (lockedAvg < 0.4 && otherAvg > lockedAvg + 0.15) {
+      lockedSide = lockedSide === 'L' ? 'R' : 'L';
+    }
+  }
+  return lockedSide;
+}
+
+// beginCountdown(): start the get-ready period (5 seconds by default). Frames are ignored until it ends, so the
+// reference reading is taken once you are in the top position and not while walking into place.
+function beginCountdown(seconds = 5) {
+  // Gives you time to get into the top position BEFORE the counter takes its reference reading.
+  readyAt = performance.now() + seconds * 1000;
+  rawHistory = []; prevSmoothed = null; trend = null; extreme = null;
+  outOfPositionStreak = 0; rejectedStreak = 0;
+}
+
+// notInPosition(): called when a push-up frame fails the visibility or position checks. It shows the message; if frames
+// keep failing (more than 10) it clears tracking so a stale half-rep cannot be counted later.
+function notInPosition(message) {
+  outOfPositionStreak++;
+  if (outOfPositionStreak > 10) { // a brief tracking blip mid-set is tolerated; a real exit is not
+    rawHistory = []; prevSmoothed = null; trend = null; extreme = null; lockedSide = null;
+    if (repState !== 'up') setRepState('up');
+  }
+  angleReadout.textContent = message;
+}
+
+// processPose(): the heart of the app. Runs for every frame in which a person is found.
+//   1) honour the get-ready countdown            2) compute the signal for the current exercise and view
+//   3) drop impossible readings                   4) smooth, then detect peaks and valleys
+//   5) apply thresholds and count                 6) update the status line
+function processPose(lm) {
+  let angleValue = null;
+
+  // Step 1: during the countdown, ignore the body and just show the seconds left. When it ends, play the lower "go" beep.
+  if (mode === 'pushup' && readyAt) {
+    const msLeft = readyAt - performance.now();
+    if (msLeft > 0) {
+      angleReadout.textContent = `Get into the top of a push-up position and hold still… ${Math.ceil(msLeft / 1000)}`;
+      return;
+    }
+    readyAt = 0;
+    beep(520, 0.35); // "go"
+  }
+
+  // Step 2a: push-ups with the camera in FRONT of you.
+  if (mode === 'pushup' && view === 'front') {
+    // Camera in front: up/down movement of the shoulders is fully visible head-on (vertical
+    // stays vertical from any angle), so track the mid-shoulder height. Scale by shoulder WIDTH
+    // (not torso length, which is foreshortened from the front) so camera distance and body size
+    // drop out. A head nod barely moves the shoulders, so it can't swing this signal.
+    const a = lm[11], b = lm[12];
+    const width = Math.hypot(a.x - b.x, a.y - b.y);
+    const visible = (a.visibility ?? 1) >= MIN_JOINT_VISIBILITY && (b.visibility ?? 1) >= MIN_JOINT_VISIBILITY;
+    if (!visible || width < 0.05) {
+      notInPosition('Both shoulders need to be clearly in view, facing the camera. Move back a little or raise the camera.');
+      return;
+    }
+    outOfPositionStreak = 0;
+    angleValue = -(((a.y + b.y) / 2) / width) * 100; // image y grows downward, so negate: up = higher value
+  } else if (mode === 'pushup') {
+    // Step 2b: push-ups with the camera at your SIDE.
+    // Camera at the side: shoulder height as % of torso length (shoulder-to-hip distance).
+    const shL = lm[11], hipL = lm[23];
+    const shR = lm[12], hipR = lm[24];
+    const visLAvg = avgVis(shL.visibility ?? 1, hipL.visibility ?? 1);
+    const visRAvg = avgVis(shR.visibility ?? 1, hipR.visibility ?? 1);
+    const side = pickLockedSide(visLAvg, visRAvg);
+    const [sh, hip] = side === 'L' ? [shL, hipL] : [shR, hipR];
+    // Position gate: only count while your body is roughly horizontal with shoulder and hip
+    // clearly visible, so seated/standing movement (e.g. a head nod) is ignored.
+    const dx = Math.abs(sh.x - hip.x), dy = Math.abs(sh.y - hip.y);
+    const torso = Math.hypot(dx, dy);
+    const tiltFromHorizontal = (Math.atan2(dy, dx) * 180) / Math.PI;
+    const visible = (sh.visibility ?? 1) >= MIN_JOINT_VISIBILITY && (hip.visibility ?? 1) >= MIN_JOINT_VISIBILITY;
+    if (!visible || torso < 0.05 || tiltFromHorizontal > MAX_PLANK_ANGLE) {
+      notInPosition('Not in push-up position. Get to the top of a push-up, side-on, with shoulder and hip in view.');
+      return;
+    }
+    outOfPositionStreak = 0;
+    angleValue = -(sh.y / torso) * 100;
+  } else {
+    // Step 2c: sit-ups (camera at your side). Signal = torso angle from vertical, using the better-visible side.
+    // The hands are also checked here against the ear (see below): a rep without hands at the ears does not count.
+    const hipL = lm[23], shL = lm[11];
+    const hipR = lm[24], shR = lm[12];
+    const visLAvg = avgVis(hipL.visibility ?? 1, shL.visibility ?? 1);
+    const visRAvg = avgVis(hipR.visibility ?? 1, shR.visibility ?? 1);
+    const side = pickLockedSide(visLAvg, visRAvg);
+    const [hip, sh] = side === 'L' ? [hipL, shL] : [hipR, shR];
+    angleValue = angleFromVertical(hip, sh);
+    // Hands: compare the near-side wrist (landmark 15 left / 16 right) with the near-side ear (7 left / 8 right),
+    // scaled by shoulder-to-hip length so camera distance doesn't matter. Only the hand nearest the camera can be judged.
+    const wrist = lm[side === 'L' ? 15 : 16], ear = lm[side === 'L' ? 7 : 8];
+    const bodyLen = Math.hypot(sh.x - hip.x, sh.y - hip.y);
+    handsStatus = 'unknown';
+    if (wrist && ear && bodyLen > 0.05 &&
+        (wrist.visibility ?? 1) >= MIN_HAND_VISIBILITY && (ear.visibility ?? 1) >= MIN_HAND_VISIBILITY) {
+      handsStatus = Math.hypot(wrist.x - ear.x, wrist.y - ear.y) / bodyLen <= HANDS_AT_EAR_LIMIT ? 'ok' : 'off';
+    }
+    // Tally the frame only during the climb: state 'down' and the torso already off the flat position (judged from the
+    // previous frame's smoothed angle). Lying flat before you start rising is not judged. countRep() reads the tally.
+    if (repState === 'down' && prevSmoothed !== null && prevSmoothed < getEffectiveThresholds().downAbove) {
+      if (handsStatus === 'ok') handsOkFrames++;
+      else if (handsStatus === 'off') handsOffFrames++;
+      else handsUnknownFrames++;
+    }
+  }
+
+  // Step 3: reject readings that cannot be real.
+  // Drop physically impossible readings (a landmark glitch, or you standing up) instead of letting
+  // them wreck the calibration. Recalibration is manual (Recalibrate button), never automatic.
+  if (isCalibrated()) {
+    const range = observedMax - observedMin;
+    if (angleValue > observedMax + range || angleValue < observedMin - range) {
+      rejectedStreak++;
+      if (rejectedStreak > 20) {
+        angleReadout.textContent = 'Outside your calibrated range. Get back into push-up position, or tap Recalibrate if the camera moved.';
+      }
+      return;
+    }
+  }
+  rejectedStreak = 0;
+
+  // Step 4: smooth the signal (3-frame average).
+  const sm = smooth(angleValue);
+
+  // Step 4b: compare with the previous value to see if the signal is rising or falling. When the direction flips,
+  // the extreme just reached is reported to handleExtreme() as a "peak" (top) or a "valley" (bottom). The very first
+  // movement only sets the starting direction; for push-ups it also records the starting reading as your "top".
+  if (prevSmoothed !== null && sm !== prevSmoothed) {
+    const rising = sm > prevSmoothed;
+    if (trend === null) {
+      trend = rising ? 'rising' : 'falling';
+      extreme = sm;
+      // Push-ups start at the top, so the first reading approximates the "up" extreme.
+      if (mode === 'pushup' && observedMax == null) { recentPeaks = [sm]; observedMax = sm; }
+    } else if (trend === 'rising' && !rising) {
+      handleExtreme('peak', extreme);
+      trend = 'falling';
+      extreme = sm;
+    } else if (trend === 'falling' && rising) {
+      handleExtreme('valley', extreme);
+      trend = 'rising';
+      extreme = sm;
+    } else {
+      extreme = trend === 'rising' ? Math.max(extreme, sm) : Math.min(extreme, sm);
+    }
+  }
+  prevSmoothed = sm;
+
+  // Count the moment you're back in the top zone instead of waiting for the next descent to
+  // reveal the peak (otherwise the last rep of a set is never counted), and mark "down" as soon
+  // as you cross into the bottom zone so fast reps with few frames can't skip past it.
+  // This also runs before calibration: sit-ups use their fixed fallback angles (70 and 40 degrees), which lets a
+  // set that starts lying flat register as DOWN immediately. The push-up fallbacks are infinite, so nothing can
+  // trigger for push-ups until they are calibrated.
+  {
+    const eff = getEffectiveThresholds();
+    const now = performance.now();
+    if (mode === 'pushup') {
+      if (repState === 'up' && sm < eff.downBelow) setRepState('down');
+      else if (repState === 'down' && sm > eff.upAbove) countRep(now);
+    } else {
+      if (repState === 'up' && sm > eff.downAbove) setRepState('down');
+      else if (repState === 'down' && sm < eff.upBelow) countRep(now);
+    }
+  }
+
+  // Step 6: update status line 1 (push-ups: live signal, state, calibrated range; sit-ups: angle, the flat/up angles a
+  // rep must reach, hands status, or a rejected-rep message).
+  angleReadout.textContent = mode === 'pushup'
+    ? `Shoulder height ${angleValue.toFixed(0)} (higher = up) · ${repState} · range ${observedMin == null ? '–' : observedMin.toFixed(0)} to ${observedMax == null ? '–' : observedMax.toFixed(0)}`
+    : (performance.now() < repNoteUntil
+        ? repNote // a rejected rep's message stays visible for a couple of seconds
+        : (() => {
+            const eff = getEffectiveThresholds();
+            const hands = handsStatus === 'ok' ? 'at ears' : handsStatus === 'off' ? 'NOT AT EARS' : 'not verified';
+            return `Sit-up angle ${angleValue.toFixed(0)}° · flat needs ≥ ${eff.downAbove.toFixed(0)}°, up needs ≤ ${eff.upBelow.toFixed(0)}° · hands ${hands}`;
+          })());
+}
+
+// ----- 7. Frame rate, drawing, the camera loop, CPU/GPU and camera handling -----
+// updateFps(): estimate frames per second from the timestamps of the last 20 frames.
+function updateFps(now) {
+  frameTimestamps.push(now);
+  if (frameTimestamps.length > 20) frameTimestamps.shift();
+  if (frameTimestamps.length >= 5) {
+    const elapsed = frameTimestamps[frameTimestamps.length - 1] - frameTimestamps[0];
+    lastFps = ((frameTimestamps.length - 1) / elapsed) * 1000;
+  }
+}
+
+// drawSkeleton(): draw the body on the overlay canvas. Landmarks are fractions from 0 to 1, so they are multiplied
+// by the canvas size to get pixels. Points with visibility below 0.3 are skipped.
+function drawSkeleton(lm) {
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  // Pairs of landmark numbers to join with a line (arms, shoulders, torso, legs).
+  const connections = [
+    [11,13],[13,15],[12,14],[14,16],
+    [11,12],[11,23],[12,24],[23,24],
+    [23,25],[25,27],[24,26],[26,28]
+  ];
+  ctx.strokeStyle = 'rgba(140,255,107,0.85)';
+  ctx.lineWidth = 3;
+  connections.forEach(([i,j]) => {
+    const a = lm[i], b = lm[j];
+    if ((a.visibility ?? 1) < 0.3 || (b.visibility ?? 1) < 0.3) return;
+    ctx.beginPath();
+    ctx.moveTo(a.x * w, a.y * h);
+    ctx.lineTo(b.x * w, b.y * h);
+    ctx.stroke();
+  });
+  // Then a dot on each main joint.
+  ctx.fillStyle = '#8CFF6B';
+  [11,12,13,14,15,16,23,24,25,26].forEach(i => {
+    const p = lm[i];
+    if ((p.visibility ?? 1) < 0.3) return;
+    ctx.beginPath();
+    ctx.arc(p.x * w, p.y * h, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+}
+
+// resizeCanvas(): keep the overlay canvas the same pixel size as the video so drawn points line up.
+function resizeCanvas() {
+  canvas.width = video.videoWidth || canvas.clientWidth;
+  canvas.height = video.videoHeight || canvas.clientHeight;
+}
+
+// Loop bookkeeping: frames processed, frames where a person was found, consecutive model errors, whether a CPU/GPU
+// switch is in progress, and the last timestamp given to the model.
+let framesSeen = 0;
+let framesWithPerson = 0;
+let detectErrors = 0;
+let switchingDelegate = false;
+let lastTs = 0;
+
+// showDiagnostics(): fill status line 2 (processor, fps, how often a person was found, tracked side, calibration status).
+function showDiagnostics() {
+  const fps = lastFps ? lastFps.toFixed(1) : '—';
+  const side = lockedSide ? ` · ${lockedSide === 'L' ? 'left' : 'right'} side` : '';
+  diagnostics.textContent = `${activeDelegate} · ~${fps} fps · person in ${framesWithPerson}/${framesSeen} frames${side} · ${isCalibrated() ? 'calibrated' : 'calibrating…'}`;
+}
+
+// scheduleNext(): queue the next loop run, once per real camera frame where the browser supports it, otherwise every screen refresh.
+function scheduleNext() {
+  if (!running) return;
+  // Fire once per real camera frame where supported; otherwise fall back to every animation frame.
+  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(renderLoop);
+  else requestAnimationFrame(renderLoop);
+}
+
+// renderLoop(): runs for every camera frame while the app is running. Everything is inside try/catch so a single
+// failure can never silently stop the loop.
+function renderLoop() {
+  if (!running) return;
+  try {
+    // Only process once the video actually has image data.
+    if (video.readyState >= 2 && video.videoWidth) {
+      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) resizeCanvas();
+      // The model requires timestamps that always increase.
+      let t = performance.now();
+      if (t <= lastTs) t = lastTs + 1; // the model needs strictly increasing timestamps
+      lastTs = t;
+      // Ask the model for the body landmarks in this frame.
+      const result = poseLandmarker.detectForVideo(video, t);
+      updateFps(t);
+      framesSeen++;
+      detectErrors = 0;
+      // Person found: draw them and process the pose. Nobody found: clear the overlay and tell the user.
+      if (result.landmarks && result.landmarks.length > 0) {
+        framesWithPerson++;
+        drawSkeleton(result.landmarks[0]);
+        processPose(result.landmarks[0]);
+      } else {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        angleReadout.textContent = 'No person detected. Move back until your shoulders and hips are in frame.';
+      }
+      showDiagnostics();
+    }
+  } catch (err) {
+    // Never let one bad frame kill the loop silently: show the error and keep going.
+    detectErrors++;
+    console.error(err);
+    angleReadout.textContent = 'Detection error: ' + (err && err.message ? err.message : err);
+    // If the GPU keeps failing (3 errors in a row), switch to the CPU automatically.
+    if (detectErrors >= 3 && activeDelegate === 'GPU' && !switchingDelegate) {
+      switchingDelegate = true;
+      setDelegate('CPU')
+        .then(() => { preferredDelegate = 'CPU'; markDelegateButtons(); detectErrors = 0; })
+        .catch(() => {})
+        .finally(() => { switchingDelegate = false; });
+    }
+  }
+  scheduleNext();
+}
+
+// createLandmarker(): build the pose model. Uses the "lite" (fastest) model file, tracks one person, runs in video mode,
+// on the chosen processor ("CPU" or "GPU").
+async function createLandmarker(vision, delegate) {
+  return PoseLandmarker.createFromOptions(vision, {
+    baseOptions: {
+      modelAssetPath: "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task",
+      delegate
+    },
+    runningMode: "VIDEO",
+    numPoses: 1,
+    // Lower than the 0.5 default: a body lying side-on is harder for the model to recognise.
+    minPoseDetectionConfidence: 0.3,
+    minPosePresenceConfidence: 0.3,
+    minTrackingConfidence: 0.3
+  });
+}
+
+// CPU/GPU handling: which processor runs the model. visionFileset is the MediaPipe runtime, loaded in start().
+let visionFileset = null;
+// Detect phones and tablets (including iPads that report themselves as Macs).
+const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+  (navigator.maxTouchPoints > 1 && /Mac/.test(navigator.platform));
+// Phones default to CPU: GPU mode is the less reliable path in mobile browsers. Switch with the toggle.
+let preferredDelegate = isMobile ? 'CPU' : 'GPU';
+const delegateSeg = document.getElementById('delegateSeg');
+
+// markDelegateButtons(): highlight the CPU/GPU button that is in use (or the preferred one, before starting).
+function markDelegateButtons() {
+  [...delegateSeg.children].forEach(b => b.classList.toggle('active', b.dataset.d === (running ? activeDelegate : preferredDelegate)));
+}
+
+// setDelegate(): create a new model on the chosen processor, swap it in, then close the old one.
+async function setDelegate(delegate) {
+  const next = await createLandmarker(visionFileset, delegate);
+  const old = poseLandmarker;
+  poseLandmarker = next;
+  activeDelegate = delegate;
+  frameTimestamps = [];
+  if (old && old.close) { try { old.close(); } catch (e) {} }
+}
+
+// CPU/GPU toggle: remember the choice and, if already running, switch immediately.
+delegateSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  preferredDelegate = btn.dataset.d;
+  markDelegateButtons();
+  if (running && !switchingDelegate) {
+    switchingDelegate = true;
+    try { await setDelegate(preferredDelegate); }
+    catch (err) { angleReadout.textContent = 'Could not switch to ' + preferredDelegate + ': ' + err.message; }
+    switchingDelegate = false;
+    markDelegateButtons();
+  }
+});
+markDelegateButtons();
+
+// Camera selection: "user" = front (selfie) camera, "environment" = rear camera. wakeLock is stored but never read.
+let facing = 'user'; // 'user' = front camera, 'environment' = rear camera
+let wakeLock = null;
+const mirrorEl = document.querySelector('.mirror');
+const camSeg = document.getElementById('camSeg');
+
+// openCamera(): stop any previous stream, ask for the chosen camera (640x480 at 30 fps preferred), start playback,
+// size the overlay, and set mirroring (front camera mirrored, rear camera not).
+async function openCamera() {
+  if (video.srcObject) video.srcObject.getTracks().forEach(t => t.stop());
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: facing }, width: { ideal: 640 }, height: { ideal: 480 }, frameRate: { ideal: 30 } },
+    audio: false
+  });
+  video.srcObject = stream;
+  await video.play();
+  resizeCanvas();
+  // Front camera is shown mirrored like a selfie; the rear camera must not be.
+  mirrorEl.style.transform = facing === 'user' ? 'scaleX(-1)' : 'none';
+}
+
+// keepAwake(): ask the browser to keep the screen on so a phone does not sleep mid-set.
+async function keepAwake() {
+  // Stops the phone screen sleeping mid-set, which would freeze the camera.
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+// The browser releases the wake lock when the tab is hidden, so request it again when the tab is visible.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible' && running) keepAwake();
+});
+
+// Front/rear camera toggle: if already running, reopen the camera and recalibrate, because the geometry has changed.
+camSeg.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button');
+  if (!btn) return;
+  facing = btn.dataset.cam;
+  [...camSeg.children].forEach(b => b.classList.toggle('active', b === btn));
+  if (running) {
+    try { await openCamera(); setMode(mode); } // new camera = new geometry, so recalibrate
+    catch (err) { angleReadout.textContent = 'Could not switch camera: ' + err.message; }
+  }
+});
+
+// ----- 8. Startup -----
+// start(): runs when you tap Start Camera. Order: unlock audio, load the MediaPipe runtime, create the model
+// (preferred processor, falling back to the other), open the camera, then begin counting.
+async function start() {
+  unlockAudio();
+  startBtn.disabled = true;
+  startBtn.textContent = 'Loading model…';
+  try {
+    // Download the MediaPipe WebAssembly runtime.
+    visionFileset = await FilesetResolver.forVisionTasks(
+      "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
+    );
+    // Create the model; if the preferred processor fails, try the other one.
+    try {
+      await setDelegate(preferredDelegate);
+    } catch (firstErr) {
+      console.warn(preferredDelegate + ' delegate failed, trying the other one', firstErr);
+      await setDelegate(preferredDelegate === 'GPU' ? 'CPU' : 'GPU');
+    }
+
+    // Open the camera, keep the screen awake, hide the hint, and start the loop (plus the get-ready countdown for push-ups).
+    await openCamera();
+    keepAwake();
+    hint.style.display = 'none';
+    running = true;
+    if (mode === 'pushup') beginCountdown(5);
+    markDelegateButtons();
+    startBtn.textContent = 'Running';
+    renderLoop();
+  } catch (err) {
+    // Anything that failed above ends up here: show the reason under the video and let the user try again. Pages not on
+    // HTTPS get a specific message, because browsers block the camera there.
+    console.error(err);
+    hint.style.display = 'flex';
+    hint.textContent = 'Could not start: ' + err.message + (window.isSecureContext
+      ? '. Allow camera access for this page in your browser settings.'
+      : '. This page is not on HTTPS, so the browser blocks the camera. Open it from an https:// link.');
+    startBtn.disabled = false;
+    startBtn.textContent = 'Start Camera';
+  }
+}
+
+// Wiring: the Start button, and keep the overlay canvas sized to the video whenever its dimensions are known or change (for example a phone rotation).
+startBtn.addEventListener('click', start);
+video.addEventListener('loadedmetadata', resizeCanvas);
+video.addEventListener('resize', resizeCanvas);
+</script>
+</body>
+</html>
